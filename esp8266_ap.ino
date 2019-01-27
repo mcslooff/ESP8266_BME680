@@ -1,3 +1,53 @@
+/**
+ * The GNU License
+ * Copyright (c) 2019 by Marcel Slooff
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * =============================================================================
+ * Writen and designed by Marcel Slooff. Based on the many examples and ideas
+ * already available for the ESP8266 NodeMCU and Bosch BME680 modules.
+ * 
+ * This code aims, next to making the BME680 usefull in a home environment, to
+ * provide an easy way of configuring the modules together. The advantage of
+ * easy configuration is easy to see when you would like to deploy many of such
+ * modules throughout your house (or would like to sell them).
+ * 
+ * This code provides:
+ * - The module starting up in Access Point mode on IP 192.168.4.1
+ * - Access Point accessible as ESP8266 with password ESP8266Test
+ * - Web page for configuration accessible at the root with username admin
+ *   and password admin.
+ * - AP name, AP password, password and username can be changed via the 
+ *   configuration page
+ * - Support NTP synchronisation for timestamoing the measurements
+ * - support two modes: pull and push for measurement publication.
+ * - configurable measurement interval
+ * - Change radio channel
+ * 
+ * Planned features:
+ * - TLS support
+ * - security on push messages for measurement publication
+ * - dowmnload and upload configuration
+ * - add end-point for submitting configuration changes with JSON
+ * - Add batery monitoring on the ADC port of the NodeMCU
+ * - Add visual indicator on one of the build in LEDs showing low-bat status
+ * =============================================================================
+ */
+
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
