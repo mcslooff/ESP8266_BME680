@@ -57,459 +57,28 @@
 #include <Adafruit_Sensor.h>
 #include "Adafruit_BME680.h"
 #include <time.h>
-#include <ArduinoJson.h>
+//#include <ArduinoJson.h>
+#include "esp8266_ap.h"
 
-#define SEALEVELPRESSURE_HPA (1013.25)
-#define SI_COUNT 12
-#define CH_COUNT 14
-#define HTML_PAGE_BUFFER_SIZE 12000
-
-const byte NON_FACTORY = 22;
-const int ALLOCATED_EEPROM = 1024;
-
-/* These are the factory default values */
-char factorySSID[] PROGMEM = "ESP8266";
-char factoryAPPassword[] PROGMEM = "ESP8266Test";
-char factoryIP[] = {192, 168, 4, 1};
-char factoryAPMode[] PROGMEM = "true";
-char factorySTAMode[] PROGMEM = "false";
-char factoryAuth[] PROGMEM = "true";
-char factoryAuthUsername[] PROGMEM = "admin";
-char factoryAuthPassword[] PROGMEM = "admin";
-int factorySI PROGMEM = 10;
-byte factoryChannel PROGMEM = 0;
-char factoryPublishPolicy[] PROGMEM = "Poll";
-char factoryUseNTP[] PROGMEM = "true";
-int factoryNTPOffset PROGMEM = 0;
-char factoryNTPPoolURL[] PROGMEM = "nl.pool.ntp.org";
-char channels[CH_COUNT][14] = {"1 - 2412 MHz", "2 - 2417 MHz", "3 - 2422 MHz", "4 - 2427 MHz", "5 - 2432 MHz", "6 - 2437 MHz", "7 - 2442 MHz", "8 - 2447 MHz", "9 - 2452 MHz", "10 - 2457 MHz", "11 - 2462 MHz", "12 - 2467 MHz", "13 - 2472 MHz", "14 - 2484 MHz"};
-
-char pollURL[] PROGMEM = "/sensor/read";
-
-/*
- * Below const char is contains the JSON structure for
- * delivering the settings to the web-client. It will
- * be used to populate the form data.
- */
-const char JSON_SETTINGS[] PROGMEM = 
-  "{\n"
-  " \"accessPointMode\": %s,\n"
-  " \"accessPointSSID\": \"%s\",\n"
-  " \"accessPointPassword\": \"%s\",\n"
-  " \"accessPointIPAddress\": \"%s\",\n"
-  " \"stationMode\": %s,\n"
-  " %s,\n"
-  " \"stationPassword\": \"%s\",\n"
-  " \"requireAuthentication\": %s,\n"
-  " \"authenticationUsername\": \"%s\",\n"
-  " \"authenticationPassword\": \"%s\",\n"
-  " \"sampleInterval\": %d,\n"
-  " \"publishURL\": \"%s\",\n"
-  " \"publishingUsername\": \"%s\",\n"
-  " \"publishingPassword\": \"%s\",\n"
-  " \"pollURL\": \"%s\",\n"
-  " \"publishingPolicy\":{\"Push\": %s, \"Poll\": %s},\n"
-  " \"stationHostname\": \"%s\",\n"
-  " %s,\n"
-  " \"useNTP\": %s,\n"
-  " \"NTPOffset\": %d,\n"
-  " \"NTPPoolURL\": \"%s\"\n"
-  "}\n";
-
-/*
- * Below const char defines the JavaScript to be loaded by the HTML poage.
- * The code contains routines to load the form data (Ajax) from the NodeMCU
- * and populate the form fields. The form data is provided as JSON and is
- * parsed by the script.
- * Further the script contains a function to periodically retreive the
- * status information from the NodeMCU and display it on the web-page.
- * This is done every 10 seconds.
- */
-const char JS_SCIPT[] PROGMEM =
-  "function openConfigSheet(evt, cityName) {\n"
-  "  var i, tabcontent, tablinks;\n"
-  " tabcontent = document.getElementsByClassName(\"tabcontent\");\n"
-  " for (i = 0; i < tabcontent.length; i++) {\n"
-  "   tabcontent[i].style.display = \"none\";\n"
-  " }\n"
-  " tablinks = document.getElementsByClassName(\"tablinks\");\n"
-  " for (i = 0; i < tablinks.length; i++) {\n"
-  "   tablinks[i].className = tablinks[i].className.replace(\"active\", \"\");\n"
-  " }\n"
-  " document.getElementById(cityName).style.display = \"block\";\n"
-  " evt.currentTarget.className += \" active\";\n"
-  "}\n"
-  "\n"
-  "var x = setInterval(function() {loadData(\"/sensor/read\", \"status\", updateData)}, 10000);\n"
-  "\n"
-  "function loadData(url, element, callback){\n"
-  " var xhttp = new XMLHttpRequest();\n"
-  " xhttp.onreadystatechange = function(){\n"
-  "   if(this.readyState == 4 && this.status == 200){\n"
-  "     callback.apply({xhttp: xhttp, element:element});\n"
-  "   }\n"
-  " };\n"
-  " xhttp.open(\"GET\", url, true);\n"
-  " xhttp.send();\n"
-  "}\n"
-  "\n"
-  "function updateData(){\n"
-  " document.getElementById(this.element).innerHTML = this.xhttp.responseText;\n"
-  "}\n"
-  "\n"
-  "function getSettings(url) {\n"
-  " var xhttp = new XMLHttpRequest();\n"
-  "\n"
-  " xhttp.onreadystatechange = function(){\n"
-  "   if(this.readyState == 4 && this.status == 200){\n"
-  "     setFormData.apply(xhttp);\n"
-  "   }\n"
-  " };\n"
-  " xhttp.open(\"GET\", url, true);\n"
-  " xhttp.send();\n"
-  "}\n"
-  "\n"
-  "function setFormData() {\n"
-  " \n"
-  " var obj = JSON.parse(this.responseText);\n"
-  " \n"
-  " for(var key in obj) {\n"
-  "   var element = document.getElementById(key);\n"
-  "   if(element == null) {\n"
-  "     var elements = document.getElementsByName(key);\n"
-  "     for(i=0; i<elements.length; i++) {\n"
-  "       elements[i].checked = obj[key][elements[i].value];\n"
-  "     }\n"
-  "   } else {\n"
-  "     if(element.type == 'select-one') {\n"
-  "       while(element.length > 0) {\n"
-  "         element.remove(0);\n"
-  "       }\n"
-  "       for(i=0; i<obj[key].length; i++) {\n"
-  "         var option = document.createElement('option');\n"
-  "         option.value = obj[key][i].value;\n"
-  "         option.text = obj[key][i].text;\n"
-  "         element.add(option);\n"
-  "         if(obj[key][i].selected==true) {\n"
-  "           element.selectedIndex = i;\n"
-  "         }\n"
-  "       }\n"
-  "     } else if(element.type == 'checkbox') {\n"
-  "       element.checked = obj[key];\n"
-  "     } else {\n"
-  "       element.value = obj[key];\n"
-  "     }\n"
-  "   }\n"
-  " }\n"
-  " \n"
-  "}\n";
-
-/*
- * Below const char defines the CCS to be used by the HTML page.
- * The HTML is requested asynchronous from the NodeMCU.
- */
-const char CSS_FILE[] PROGMEM = 
-  "@charset \"UTF-8\";\n"
-  "     /* Style the tab */\n"
-  "     .tab {\n"
-  "       overflow: hidden;\n"
-  "       border: 1px solid #ccc;\n"
-  "       background-color: #f1f1f1;\n"
-  "       border-radius: 5px;\n"
-  "       padding: 5px;\n"
-  "     }\n"
-  "\n"
-  "     /* Style the buttons that are used to open the tab content */\n"
-  "     .tab button {\n"
-  "       background-color: inherit;\n"
-  "       float: left;\n"
-  "       border: 1px solid black;\n"
-  "       outline: none;\n"
-  "       cursor: pointer;\n"
-  "       padding: 14px 16px;\n"
-  "       transition: 0.3s;\n"
-  "       border-radius: 10px;\n"
-  "       margin: 5px;\n"
-  "     }\n"
-  "\n"
-  "     /* Change background color of buttons on hover */\n"
-  "     .tab button:hover {\n"
-  "       background-color: #ddd000;\n"
-  "     }\n"
-  "\n"
-  "     /* Create an active/current tablink class */\n"
-  "     .tab button.active {\n"
-  "       background-color: #ccc000;\n"
-  "     }\n"
-  "\n"
-  "     /* Style the tab content */\n"
-  "     .tabcontent {\n"
-  "       display: none;\n"
-  "       padding: 6px 12px;\n"
-  "       border: 1px solid #ccc;\n"
-  "       border-top: none;\n"
-  "     }\n"
-  "     /* Table style */\n"
-  "     .table {\n"
-  "       border: 1px solid black;\n"
-  "       border-radius: 5px;\n"
-  "       padding: 5px;\n"
-  "       margin: 5px;\n"
-  "     }\n"
-  "     .table td {\n"
-  "       border-bottom: 1px solid red;\n"
-  "       vertical-align: text-top;\n"
-  "     }\n"
-  "     \n"
-  "     .banner {\n"
-  "       border-radius: 15px 50px;\n"
-  "       border: 1px solid green;\n"
-  "       padding: 5px;\n"
-  "       margin: 5px;\n"
-  "       text-align: center;\n"
-  "       background-color: green;\n"
-  "     }\n"
-  "     .banner h1 {\n"
-  "       color: #ccc000;\n"
-  "     }\n";
-
-/*
- * The below const char contains the main HTML setup page. There
- * are references to the CSS page and the JavaScript page in the
- * HTML tages STYLE and SCRIPT.
- */
-const char INDEX_HTML[] PROGMEM =
-  "<!DOCTYPE HTML>\n"
-  "<HTML>\n"
-  "  <HEAD>\n"
-  "   <TITLE>NodedMCU Configuration</TITLE>\n"
-  "   <style>%s</style>\n"
-  "   <script defer=\"defer\" src=\"/nodemcu.js\"></script>\n"
-  " <BODY onload=\"getSettings('/settings');\">\n"
-  "   <div class=\"banner\">\n"
-  "     <h1>MCS - NodeMCU BME680 setup</h1>\n"
-  "   </div>\n"
-  "   <div class=\"tab\">\n"
-  "     <button class=\"tablinks\" onclick=\"openConfigSheet(event, 'AP')\">Access Point</button>\n"
-  "     <button class=\"tablinks\" onclick=\"openConfigSheet(event, 'STA')\">WiFi station</button>\n"
-  "     <button class=\"tablinks\" onclick=\"openConfigSheet(event, 'Auth')\">Authentication</button>\n"
-  "     <button class=\"tablinks\" onclick=\"openConfigSheet(event, 'BME680')\">BME680 Sensor</button>\n"
-  "     <button class=\"tablinks\" onclick=\"openConfigSheet(event, 'Status')\">Status</button>\n"
-  "   </div>\n"
-  "   <FORM action=\"/\" method=\"POST\" >\n"
-  "     <div id=\"AP\" class=\"tabcontent\">\n"
-  "       <h3>Access Point configuration</h3>\n"
-  "       <table class=\"table\">\n"
-  "       <tr>\n"
-  "         <td colspan=\"2\">\n"
-  "           <input id=\"accessPointMode\" name=\"accessPointMode\" type=\"checkbox\">Operate as WiFi Access Point\n"
-  "         </td>\n"
-  "       </tr>\n"
-  "       <tr>\n"
-  "         <td>Access Point SSID:</td>\n"
-  "         <td>\n"
-  "           <input id=\"accessPointSSID\" name=\"accessPointSSID\" type=\"text\">\n"
-  "         </td>\n"
-  "       </tr>\n"
-  "       <tr>\n"
-  "         <td>Channel:</td>\n"
-  "         <td>\n"
-  "           <select id=\"channelList\" name=\"channelList\" width=\"200px\"></select>\n"
-  "       </tr>\n"
-  "       <tr>\n"
-  "         <td>Access Point password:</td>\n"
-  "         <td>\n"
-  "           <input id=\"accessPointPassword\" name=\"accessPointPassword\" type=\"password\">\n"
-  "         </td>\n"
-  "       </tr>\n"
-  "       <tr>\n"
-  "         <td>IP Address:</td>\n"
-  "         <td>\n"
-  "           <input id=\"accessPointIPAddress\" name=\"accessPointIPAddress\" type=\"text\">\n"
-  "       </tr>\n"
-  "       </table>\n"
-  "     </div>\n"
-  "     <div id=\"STA\" class=\"tabcontent\">\n"
-  "       <h3>WiFi Station configuration</h3>\n"
-  "       <table class=\"table\">\n"
-  "       <tr>\n"
-  "         <td colspan=\"2\">\n"
-  "           <input id=\"stationMode\" name=\"stationMode\" type=\"checkbox\">Operate as WiFi Station\n"
-  "         </td>\n"
-  "       </tr>\n"
-  "       <tr>\n"
-  "         <td>Available Access Points:</td>\n"
-  "         <td>\n"
-  "           <select id=\"accessPointList\" name=\"accessPointList\" size=\"10\" width=\"200px\"></select>\n"
-  "       </tr>\n"
-  "        <tr>\n"
-  "          <td>Station hostname:</td>\n"
-  "          <td>\n"
-  "            <input id=\"stationHostname\" name=\"stationHostname\" type=\"text\">\n"
-  "          </td>\n"
-  "        </tr>\n"
-  "       <tr>\n"
-  "         <td colspan=\"2\"><input name=\"scan\" type=\"button\" value=\"Scan\" onclick=\"getSettings('/aplist');\"></td>\n"
-  "       </tr>\n"
-  "       <tr>\n"
-  "         <td>Password:</td>\n"
-  "         <td>\n"
-  "           <input id=\"stationPassword\" name=\"stationPassword\" type=\"password\">\n"
-  "         </td>\n"
-  "       </tr>\n"
-  "       <tr>\n"
-  "         <td colspan=\"2\">\n"
-  "           <input id=\"useNTP\" name=\"useNTP\" type=\"checkbox\">Use NTP time synchronisation.\n"
-  "         </td>\n"
-  "       </tr>\n"
-  "        <tr>\n"
-  "          <td>Offset:</td>\n"
-  "          <td>\n"
-  "            <input id=\"NTPOffset\" name=\"NTPOffset\" type=\"text\"> Seconds.\n"
-  "          </td>\n"
-  "        </tr>\n"
-  "        <tr>\n"
-  "          <td>NTP pool URL:</td>\n"
-  "          <td>\n"
-  "            <input id=\"NTPPoolURL\" name=\"NTPPoolURL\" type=\"text\">\n"
-  "          </td>\n"
-  "        </tr>\n"
-  "       </table>\n"
-  "     </div>\n"
-  "     <div id=\"Auth\" class=\"tabcontent\">\n"
-  "       <h3>Authentication</h3>\n"
-  "       <table class=\"table\">\n"
-  "       <tr>\n"
-  "         <td colspan=\"2\">\n"
-  "           <input id=\"requireAuthentication\" name=\"requireAuthentication\" type=\"checkbox\">Require authentication\n"
-  "         </td>\n"
-  "       </tr>\n"
-  "       <tr>\n"
-  "         <td>Username:</td>\n"
-  "         <td>\n"
-  "           <input id=\"authenticationUsername\" name=\"authenticationUsername\" type=\"text\">\n"
-  "         </td>\n"
-  "       </tr>\n"
-  "       <tr>\n"
-  "         <td>Password:</td>\n"
-  "         <td>\n"
-  "           <input id=\"authenticationPassword\" name=\"authenticationPassword\" type=\"password\">\n"
-  "         </td>\n"
-  "       </tr>\n"
-  "       </table>\n"
-  "     </div>    \n"
-  "     <div id=\"BME680\" class=\"tabcontent\">\n"
-  "       <h3>BME680 Sensor configuration</h3>\n"
-  "       <table class=\"table\">\n"
-  "       <tr>\n"
-  "         <td>Sample interval:</td>\n"
-  "         <td>\n"
-  "           <input id=\"sampleInterval\" name=\"sampleInterval\" type=\"text\">Seconds\n"
-  "         </td>\n"
-  "       </tr>\n"
-  "       <tr>\n"
-  "         <td colspan=\"2\">Measurements publishing policy:</td>\n"
-  "       </tr>\n"
-  "       <tr>\n"
-  "         <td>\n"
-  "           <input name=\"publishingPolicy\" type=\"radio\" value=\"Push\">Push\n"
-  "         </td>\n"
-  "         <td>\n"
-  "           <table>\n"
-  "             <tr>\n"
-  "               <td>POST to:</td>\n"
-  "               <td>\n"
-  "                 <input id=\"publishURL\" name=\"publishURL\" type=\"text\">\n"
-  "               </td>\n"
-  "             </tr>\n"
-  "             <tr>\n"
-  "               <td>Username:</td>\n"
-  "               <td>\n"
-  "                 <input id=\"publishingUsername\" name=\"publishingUsername\" type=\"text\">\n"
-  "               </td>\n"
-  "             </tr>\n"
-  "             <tr>\n"
-  "               <td>Password:</td>\n"
-  "               <td>\n"
-  "                 <input id=\"publishingPassword\" name=\"publishingPassword\" type=\"password\">\n"
-  "               </td>\n"
-  "             </tr>\n"
-  "           </table>\n"
-  "         </td>\n"
-  "       </tr>\n"
-  "       <tr>\n"
-  "         <td>\n"
-  "           <input name=\"publishingPolicy\" type=\"radio\" value=\"Poll\">Poll\n"
-  "         </td>\n"
-  "         <td>\n"
-  "           <table>\n"
-  "             <tr>\n"
-  "               <td>GET from:</td>\n"
-  "               <td>\n"
-  "                 <input id=\"pollURL\" name=\"pollURL\" type=\"text\" readonly >\n"
-  "               </td>\n"
-  "             </tr>\n"
-  "           </table>\n"
-  "         </td>\n"
-  "       </tr>\n"
-  "       </table>\n"
-  "     </div>\n"
-  "     <div id=\"Status\" class=\"tabcontent\">\n"
-  "       <h3>Status information</h3>\n"
-  "       <div id=\"status\" height=\"200px\" width=\"200px\">\n"
-  "       </div>\n"
-  "     </div>\n"
-  "     <input type=\"submit\" value=\"Submit\"> <input type=\"button\" value=\"Reset\" onclick=\"getSettings('/settings');\">\n"
-  "   </FORM>\n"
-  " </BODY>\n"
-  "</HTML>\n";
-
-const char SENSOR_HTML[] PROGMEM = "{\"timestamp\":%d, \"temperature\":%f, \"humidity\":%f, \"air-pressure\":%f, \"voc\":%f, \"resultCode\": %d, \"resultText\", \"%s\"}";
-
-// Declare String to manipulate html data.
-char html[HTML_PAGE_BUFFER_SIZE];
-  
 // Define a web server at port 80 for HTTP
-ESP8266WebServer server(80);
+ESP8266WebServer *server;
 
 // Define a JSON parser object.
-StaticJsonDocument<ALLOCATED_EEPROM> jsonBuffer;
+//StaticJsonDocument<ALLOCATED_EEPROM> jsonBuffer;
 
 // The BME680 Object on I2C bus.
 Adafruit_BME680 bme;
 
-//WiFiUDP ntpUDP;
-// You can specify the time server pool and the offset (in seconds, can be
-// changed later with setTimeOffset() ). Additionaly you can specify the
-// update interval (in milliseconds, can be changed using setUpdateInterval() ).
-//NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", 3600, 60000);
-
 
 /* This is where we declare the SRAM configuration parameters */
-String ssid;
-String APPassword;
-char APIP[4];
-String APMode;
-String STAMode;
-String STAPassword;
-String STASSID;
-String Auth;
-String AuthUsername;
-String AuthPassword;
-int SIManual;
-String pushURL;
-String pushUsername;
-String pushPassword;
-String publishPolicy;
-String espHostname;
-byte Channel;
+_settings settings;
 int netCount=0;
-String UseNTP;
-int NTPOffset;
-String NTPPoolURL;
-
-boolean measurementTaken = false;
+unsigned long upTimeCounter = 0;
+unsigned long lastMillis = 0;
+byte bootCounter;
+boolean measurementPublished = false;
 time_t lastMeasurement;
+char currentIP[16];
 
 /*
  * Below function is linked to the end-poiunt that should serve the CSS file
@@ -517,7 +86,7 @@ time_t lastMeasurement;
  * the CSS to be applied to the HTML page.
  */
 void handleCSS() {
-  server.send ( 200, "text/html", CSS_FILE );
+  server->send ( 200, PSTR("text/html"), CSS_FILE );
 }
 
 /*
@@ -526,7 +95,7 @@ void handleCSS() {
  * containing the JS file (content) for the HTML page.
  */
 void handleJS() {
-  server.send ( 200, "text/html", JS_SCIPT );
+  server->send ( 200, PSTR("text/html"), JS_SCIPT );
 }
 
 /*
@@ -541,14 +110,11 @@ void handleAPScan() {
   
   scanAccessPoints();
   
-  String accessPointList = getSTAList(STASSID);
+  String accessPointList = getSTAList(settings.stationSSID);
 
-  char apl[accessPointList.length()+1];
-  accessPointList.toCharArray(apl, sizeof(apl));
+  snprintf( html, HTML_PAGE_BUFFER_SIZE, "{%s}\n", accessPointList.c_str() );
   
-  snprintf( html, HTML_PAGE_BUFFER_SIZE, "{%s}\n", apl );
-  
-  server.send ( 200, "application/json", html );
+  server->send ( 200, PSTR("application/json"), html );
   
 }
 
@@ -556,7 +122,7 @@ void handleAPScan() {
  * The below function parses an IP address provided as String
  * object intio a byte array (char).
  */
-void parseIPAddress(String ip, char *ipAddress) {
+void parseIPAddress(String ip, byte *ipAddress) {
   
   char tmpIP[4];
   String digit = "";
@@ -568,7 +134,6 @@ void parseIPAddress(String ip, char *ipAddress) {
       digit += ip.charAt(i);
       i++;
     }
-    Serial.println("digit=" + digit);
     tmpIP[j] = (byte)digit.toInt();
     digit="";
     j++;
@@ -598,13 +163,9 @@ void handleRoot() {
    * the provided credentials against the configured
    * credential and return the result.
    */
-  if(Auth.compareTo("true")==0) {
-    char u[AuthUsername.length()+1];
-    AuthUsername.toCharArray(u, sizeof(u));
-    char p[AuthPassword.length()+1];
-    AuthPassword.toCharArray(p, sizeof(p));
-    if (!server.authenticate(u, p)) {
-      return server.requestAuthentication();
+  if(settings.stationRequireAuthentication) {
+    if (!server->authenticate(settings.stationUsername, settings.stationPassword)) {
+      return server->requestAuthentication();
     }
   }
 
@@ -615,45 +176,46 @@ void handleRoot() {
    * and we will attempt to parse as many elements as possible
    * from it and change the configuration accordingly.
    */
-  if (server.hasArg("publishingPolicy")) {
+  if (server->hasArg(PSTR("publishingPolicy"))) {
 
-    APMode = (server.arg("accessPointMode").compareTo("on")==0?"true":"false");
-    ssid = server.arg("accessPointSSID");
-    APPassword = server.arg("accessPointPassword");
+    settings.accessPointMode = (server->arg(PSTR("accessPointMode")).compareTo(PSTR("on"))==0);
+    server->arg(PSTR("accessPointSSID")).toCharArray(settings.accessPointSSID, sizeof(settings.accessPointSSID));
+    server->arg(PSTR("accessPointPassword")).toCharArray(settings.accessPointPassword, sizeof(settings.accessPointPassword));
     /*
      * Handling the IP address requires some additional attention. The IP
      * is human readable and provided as string. We need to split it by
      * seperating it at the dots and convert each individual String to
      * a byte value for storage.
      */
-    Serial.println(server.arg("accessPointIPAddress"));
-    parseIPAddress(server.arg("accessPointIPAddress"), APIP);
+    Serial.println(server->arg(PSTR("accessPointIPAddress")));
+    parseIPAddress(server->arg(PSTR("accessPointIPAddress")), settings.accessPointIP);
   
-    STAMode = (server.arg("stationMode").compareTo("on")==0?"true":"false");
-    STAPassword = server.arg("stationPassword");
+    settings.stationMode = (server->arg(PSTR("stationMode")).compareTo(PSTR("on"))==0);
+    server->arg(PSTR("stationPassword")).toCharArray(settings.stationAccessPointPassword, sizeof(settings.stationAccessPointPassword));
     
-    STASSID = server.arg("accessPointList");
+    server->arg(PSTR("accessPointList")).toCharArray(settings.stationSSID, sizeof(settings.stationSSID));
 
-    Auth = (server.arg("requireAuthentication").compareTo("on")==0?"true":"false");
-    AuthUsername = server.arg("authenticationUsername");
-    AuthPassword = server.arg("authenticationPassword");
+    settings.stationRequireAuthentication = (server->arg(PSTR("requireAuthentication")).compareTo(("on"))==0);
+    server->arg(PSTR("authenticationUsername")).toCharArray(settings.stationUsername, sizeof(settings.stationUsername));
+    server->arg(PSTR("authenticationPassword")).toCharArray(settings.stationPassword, sizeof(settings.stationPassword));
     
-    SIManual = server.arg("sampleInterval").toInt();
+    settings.sensorSampleInterval = server->arg(PSTR("sampleInterval")).toInt();
     
-    espHostname = server.arg("stationHostname");
-    publishPolicy = server.arg("publishingPolicy");
+    server->arg(PSTR("stationHostname")).toCharArray(settings.hostName, sizeof(settings.hostName));
+    server->arg(PSTR("publishingPolicy")).toCharArray(settings.publishingPolicy, sizeof(settings.publishingPolicy));
 
-    pushURL = server.arg("publishURL");
-    pushUsername = server.arg("publishingUsername");
-    pushPassword = server.arg("publishingPassword");
+    server->arg(PSTR("publishURL")).toCharArray(settings.publishingURL, sizeof(settings.publishingURL));
+    server->arg(PSTR("publishingUsername")).toCharArray(settings.publishingUsername, sizeof(settings.publishingUsername));
+    server->arg(PSTR("publishingPassword")).toCharArray(settings.publishingPassword, sizeof(settings.publishingPassword));
     
-    UseNTP = (server.arg("useNTP").compareTo("on")==0?"true":"false");
-    NTPOffset = server.arg("NTPOffset").toInt();
-    NTPPoolURL = server.arg("NTPPoolURL");
+    settings.useNTP = (server->arg(PSTR("useNTP")).compareTo(PSTR("on"))==0);
+    settings.NTPOffset = server->arg(PSTR("NTPOffset")).toInt();
+    server->arg(PSTR("NTPPoolURL")).toCharArray(settings.NTPPoolURL, sizeof(settings.NTPPoolURL));
+
+    settings.serverPort = server->arg(PSTR("serverPort")).toInt();
     
     writeConfig();
     readConfig();
-    printConfig();
     //ESP.restart(); //ESP.reset();
   }
   /*
@@ -668,7 +230,7 @@ void handleRoot() {
    * the script starts executing immediatly and will crash.)
    */
   snprintf(html, HTML_PAGE_BUFFER_SIZE, INDEX_HTML, CSS_FILE );
-  server.send ( 200, "text/html", html );
+  server->send ( 200, PSTR("text/html"), html );
 }
 
 /*
@@ -680,50 +242,39 @@ void handleRoot() {
  */
 void handleSettings() {
 
-  String accessPointList = getSTAList(STASSID);
-  String channelList = getChannelList(Channel);
+  String accessPointList = getSTAList(settings.stationSSID);
+  String channelList = getChannelList(settings.accessPointChannel);
 
-  char apl[accessPointList.length()+1];
-  accessPointList.toCharArray(apl, sizeof(apl));
-
-  char chl[channelList.length()+1];
-  channelList.toCharArray(chl, sizeof(chl));
-
-  char IP[16];
-  char ph[100];
-  
-  WiFi.localIP().toString().toCharArray(IP, sizeof(IP));
-  snprintf( ph, sizeof(ph), "http://%s%s", IP, pollURL);
-  
-  String ip = IPAddress(APIP[0], APIP[1], APIP[2], APIP[3]).toString();
-  ip.toCharArray(IP, sizeof(IP)+1);
+  char pollingURL[200];
+  snprintf(pollingURL, sizeof(pollingURL), "http://%s:%d%s", currentIP, settings.serverPort, pollURL);
   
   snprintf( html, HTML_PAGE_BUFFER_SIZE, JSON_SETTINGS,
-    APMode.c_str(),
-    ssid.c_str(),
-    APPassword.c_str(),
-    IP,
-    STAMode.c_str(),
-    apl,
-    STAPassword.c_str(),
-    Auth.c_str(),
-    AuthUsername.c_str(),
-    AuthPassword.c_str(),
-    SIManual,
-    pushURL.c_str(),
-    pushUsername.c_str(),
-    pushPassword.c_str(),
-    ph,
-    (publishPolicy.compareTo("Push")==0?"true":"false"),
-    (publishPolicy.compareTo("Poll")==0?"true":"false"),
-    espHostname.c_str(),
-    chl,
-    UseNTP.c_str(),
-    NTPOffset,
-    NTPPoolURL.c_str()
+    settings.accessPointMode?"true":"false",
+    settings.accessPointSSID,
+    settings.accessPointPassword,
+    IPAddress(settings.accessPointIP[0], settings.accessPointIP[1], settings.accessPointIP[2], settings.accessPointIP[3]).toString().c_str(),
+    settings.stationMode?"true":"false",
+    accessPointList.c_str(),
+    settings.stationAccessPointPassword,
+    settings.stationRequireAuthentication?"true":"false",
+    settings.stationUsername,
+    settings.stationPassword,
+    settings.sensorSampleInterval,
+    settings.publishingURL,
+    settings.publishingUsername,
+    settings.publishingPassword,
+    pollingURL,
+    strcmp(settings.publishingPolicy, "Push")==0?"true":"false",
+    strcmp(settings.publishingPolicy, "Poll")==0?"true":"false",
+    settings.hostName,
+    channelList.c_str(),
+    settings.useNTP?"true":"false",
+    settings.NTPOffset,
+    settings.NTPPoolURL,
+    settings.serverPort
   );
-  
-  server.send ( 200, "application/json", html );
+
+  server->send ( 200, PSTR("application/json"), html );
 
 }
 
@@ -735,25 +286,21 @@ void handleSettings() {
  */
 void handleSensorRead() {
 
-  if(Auth.compareTo("true")==0) {
-    char u[AuthUsername.length()+1];
-    AuthUsername.toCharArray(u, sizeof(u));
-    char p[AuthPassword.length()+1];
-    AuthPassword.toCharArray(p, sizeof(p));
-    if (!server.authenticate(u, p)) {
-      return server.requestAuthentication();
+  if(settings.stationRequireAuthentication) {
+    if (!server->authenticate(settings.stationUsername, settings.stationPassword)) {
+      return server->requestAuthentication();
     }
   }
-
+  
   if (! bme.performReading()) {
-    Serial.println("Failed to perform reading");
+    Serial.println(PSTR("Failed to perform reading"));
     time_t now = time(nullptr);
-    snprintf(html, HTML_PAGE_BUFFER_SIZE, SENSOR_HTML, now, bme.temperature, bme.humidity, bme.pressure / 100.0, bme.gas_resistance, 10, "Failed to perform reading");
+    snprintf(html, HTML_PAGE_BUFFER_SIZE, SENSOR_HTML, settings.hostName, now, bme.temperature, bme.humidity, bme.pressure / 100.0, bme.gas_resistance, 10, PSTR("Failed to perform reading"));
   } else {
     lastMeasurement = time(nullptr);
-    snprintf(html, 10000, SENSOR_HTML, lastMeasurement, bme.temperature, bme.humidity, bme.pressure / 100.0, bme.gas_resistance, 0, "Success");
+    snprintf(html, 10000, SENSOR_HTML, settings.hostName, lastMeasurement, bme.temperature, bme.humidity, bme.pressure / 100.0, bme.gas_resistance, 0, PSTR("Success"));
   }
-  server.send ( 200, "application/json", html );
+  server->send ( 200, PSTR("application/json"), html );
 }
 
 /*
@@ -761,11 +308,24 @@ void handleSensorRead() {
  * performing a new measurement. It is linked to end-point
  * /sensor/data
  */
-void handleSensorData() {
+void handleStatus() {
 
-  snprintf(html, 10000, SENSOR_HTML, lastMeasurement, bme.temperature, bme.humidity, bme.pressure / 100.0, bme.gas_resistance, 0, "Success");
+  unsigned long t = upTimeCounter/1000;
+  unsigned long s = t%60;
+  t=t/60;
+  unsigned long m = t%60;
+  t=t/60;
+  unsigned long h = t%24;
+  t=t/24;
   
-  server.send ( 200, "application/json", html );
+  time_t n = time(nullptr);
+
+  char ip[16];
+  WiFi.localIP().toString().toCharArray(ip, sizeof(ip));
+  
+  snprintf(html, 10000, STATUS_HTML, t, h, m, s, ctime(&n), ctime(&lastMeasurement), settings.hostName, ip, bme.temperature, bme.humidity, bme.pressure / 100.0, bme.gas_resistance/1000);
+  
+  server->send ( 200, PSTR("test/html"), html );
 }
 
 /*
@@ -775,14 +335,14 @@ void handleSensorData() {
  */
 String getSTAList(String selectItem) {
 
-  String stationList = " \"accessPointList\": [\n";
+  String stationList = PSTR(" \"accessPointList\": [\n");
 
   for(int i=0; i<netCount; i++) {
 
     char s[WiFi.SSID(i).length()+1];
     WiFi.SSID(i).toCharArray(s, sizeof(s));
     
-    stationList += "   {\"value\":\"" + WiFi.SSID(i) + "\", \"text\":\"" + WiFi.SSID(i) + "\", \"selected\": " + (selectItem.compareTo(WiFi.SSID(i))==0?"true":"false") + "}" + (i+1<netCount?",\n":"\n");
+    stationList += PSTR("   {\"value\":\"") + WiFi.SSID(i) + PSTR("\", \"text\":\"") + WiFi.SSID(i) + PSTR("\", \"selected\": ") + (selectItem.compareTo(WiFi.SSID(i))==0?PSTR("true"):PSTR("false")) + PSTR("}") + (i+1<netCount?PSTR(",\n"):PSTR("\n"));
   }
 
   stationList += " ]\n";
@@ -796,12 +356,12 @@ String getSTAList(String selectItem) {
  */
 String getChannelList(byte Channel) {
 
-  String chsnnelList = " \"channelList\": [\n";;
+  String chsnnelList = PSTR(" \"channelList\": [\n");
   
   for(int i=0; i<CH_COUNT; i++) {
-    chsnnelList += "   {\"value\":\"" + String(i) + "\", \"text\":\"" + channels[i] + "\", \"selected\": " + (i==Channel?"true":"false") + "}" + (i+1<CH_COUNT?",\n":"\n");
+    chsnnelList += PSTR("   {\"value\":\"") + String(i) + PSTR("\", \"text\":\"") + channels[i] + PSTR("\", \"selected\": ") + (i==Channel?PSTR("true"):PSTR("false")) + "}" + (i+1<CH_COUNT?PSTR(",\n"):PSTR("\n"));
   }
-  chsnnelList += " ]\n";
+  chsnnelList += PSTR(" ]\n");
   
   return chsnnelList;
 }
@@ -811,43 +371,22 @@ String getChannelList(byte Channel) {
  */
 void handleNotFound() {
   digitalWrite ( LED_BUILTIN, 0 );
-  String message = "File Not Found";
-  message += "URI: ";
-  message += server.uri();
-  message += "Method: ";
-  message += ( server.method() == HTTP_GET ) ? "GET" : "POST";
-  message += "Arguments: ";
-  message += server.args();
-  message += "";
+  String message = PSTR("File Not Found");
+  message += PSTR("URI: ");
+  message += server->uri();
+  message += PSTR("Method: ");
+  message += ( server->method() == HTTP_GET ) ? PSTR("GET") : PSTR("POST");
+  message += PSTR("Arguments: ");
+  message += server->args();
+  message += PSTR("");
 
-  for ( uint8_t i = 0; i < server.args(); i++ ) {
-    message += " " + server.argName ( i ) + ": " + server.arg ( i ) + "";
+  for ( uint8_t i = 0; i < server->args(); i++ ) {
+    message += PSTR(" ") + server->argName ( i ) + PSTR(": ") + server->arg ( i ) + PSTR("");
   }
 
-  server.send ( 404, "text/plain", message );
+  server->send ( 404, PSTR("text/plain"), message );
 }
 
-/*
- * Below function reads a variable from EEPROM.
- */
-void readVar(char *var, int size, int *address) {
-  for(int i=0; i<size; i++) {
-    *var = EEPROM.read(*address+i);
-    var++;
-  }
-  *address+=size;
-}
-
-/*
- * Below function writes a variable to EEPROM.
- */
-void writeVar(char *var, int size, int *address) {
-  for(int i=0; i<size; i++) {
-    EEPROM.write(*address+i, *var);
-    var++;
-  }
-  *address+=size;
-}
 
 /*
  * Below function stores/overwrites the EEPROM settings
@@ -855,47 +394,17 @@ void writeVar(char *var, int size, int *address) {
  */
 void storeFactoryDefaults() {
 
-  Serial.printf("Clean EEPROM before storing factory defaults.\n");
+  Serial.printf(PSTR("Clean EEPROM before storing factory defaults.\n"));
   for(int address=0; address<ALLOCATED_EEPROM; address++) {
     EEPROM.write(address, 0);
   }
-  EEPROM.commit();
-  
-  int address = 0;
-  
-  Serial.printf("Storing factory default configuration.\n");
-  
-  ssid = String(factorySSID);
-  APPassword = String(factoryAPPassword);
-  APIP[0] = factoryIP[0];
-  APIP[1] = factoryIP[1];
-  APIP[2] = factoryIP[2];
-  APIP[3] = factoryIP[3];
-  APMode = String(factoryAPMode);
-  STAMode = String(factorySTAMode);
-  STAPassword = "";
-  STASSID = "";
-  Auth = String(factoryAuth);
-  AuthUsername = String(factoryAuthUsername);
-  AuthPassword = String(factoryAuthPassword);
-  SIManual = factorySI;
-  pushURL = "";
-  pushUsername = "";
-  pushPassword = "";
-  publishPolicy = String(factoryPublishPolicy);
-  espHostname = "";
-  Channel = factoryChannel;
-  UseNTP = String(factoryUseNTP);
-  NTPOffset = factoryNTPOffset;
-  NTPPoolURL = String(factoryNTPPoolURL);
-
-  writeConfig();
-
   EEPROM.write(0, NON_FACTORY);
+  Serial.printf(PSTR("Resetting boot counter to zero.\n"));
+  EEPROM.write(1, 0);
+  EEPROM.put(2, factoryDefaults);
   EEPROM.commit();
-  readConfig();
-  printConfig();
-  Serial.println("factory default persisted.");
+  
+  Serial.println(PSTR("factory default persisted."));
 }
 
 /*
@@ -908,87 +417,21 @@ void storeFactoryDefaults() {
  */
 void readConfig() {
 
-  Serial.println("Reading configuration from EEPROM.");
-  int address = 0;
+  Serial.println(PSTR("Reading configuration from EEPROM."));
   byte value = 0;
+  
   // Read first byte. If !NON_FACTORY then first call 
   // storeFactoryDefaults to initialize the configuration
-  
-  value = EEPROM.read(address);
-  Serial.printf("Factory indicator value: %d\n", value);
+  value = EEPROM.read(0);
+  Serial.printf(PSTR("Factory indicator value: %d\n"), value);
   if(value!=NON_FACTORY) {
     storeFactoryDefaults();
   }
-  address++;
-  
-  readVar(html, ALLOCATED_EEPROM - 2, &address);
-  Serial.printf("Retreived configuration JSON: %s\n", html);
-  
-  DeserializationError error = deserializeJson(jsonBuffer, html);
-  
-  if (error) {
-    Serial.println(html);
-    Serial.println("DeserializeJson() failed: ");
-    Serial.println(error.c_str());
-    storeFactoryDefaults();
-    return;
-  }
-  
-  JsonObject root = jsonBuffer.as<JsonObject>();
-  
-  APMode = ((boolean)root["accessPointMode"]?"true":"false");
-
-  const char* a = root["accessPointSSID"];
-  ssid = String(a);
-
-  Channel = root["channel"];
-
-  a = root["accessPointPassword"];
-  APPassword = String(a);
-
-  const char* ip = root["accessPointIPAddress"];
-  parseIPAddress(String(ip), APIP);
-
-  STAMode = ((boolean)root["stationMode"]?"true":"false");
-
-  a = root["accessPoint"];
-  STASSID = String(a);
-
-  a = root["stationHostname"];
-  espHostname = String(a);
-
-  a = root["stationPassword"];
-  STAPassword = String(a);
-
-  Auth = ((boolean)root["requireAuthentication"]?"true":"false");
-
-  a = root["authenticationUsername"];
-  AuthUsername = String(a);
-
-  a = root["authenticationPassword"];
-  AuthPassword = String(a);
-
-  SIManual = root["sampleInterval"];
-
-  a = root["publishingPolicy"];
-  publishPolicy = String(a);
-
-  a = root["publishURL"];
-  pushURL = String(a);
-
-  a = root["publishingUsername"];
-  pushUsername = String(a);
-
-  a = root["publishingPassword"];
-  pushPassword = String(a);
-
-  UseNTP = ((boolean)root["useNTP"]?"true":"false");
-
-  NTPOffset = root["NTPOffset"];
-
-  a = root["NTPPoolURL"];
-  NTPPoolURL = String(a);
-
+  // Address zero if the factory indicator.
+  // Address one is for the boot counter.
+  EEPROM.get(2, settings);
+  Serial.println(PSTR("Configuration loaded"));
+  printConfig();
 }
 
 /*
@@ -996,62 +439,12 @@ void readConfig() {
  * parameters to EEPROM.
  */
 void writeConfig() {
-
-  int address = 1;
-
-  JsonObject root = jsonBuffer.to<JsonObject>();
-
-  root["accessPointMode"] = (APMode.compareTo("true")==0);
-  
-  root["accessPointSSID"] = ssid;
-
-  root["channel"] = Channel;
-  
-  root["accessPointPassword"] = APPassword;
-  
-  root["accessPointIPAddress"] = IPAddress(APIP[0], APIP[1], APIP[2], APIP[3]).toString();
-
-  root["stationMode"] = (STAMode.compareTo("true")==0);
-
-  root["accessPoint"] = STASSID;
-
-  root["stationHostname"] = espHostname;
-
-  root["stationPassword"] = STAPassword;
-
-  root["requireAuthentication"] = (Auth.compareTo("true")==0);
-
-  root["authenticationUsername"] = AuthUsername;
-
-  root["authenticationPassword"] = AuthPassword;
-  
-  root["sampleInterval"] = SIManual;
-
-  root["publishingPolicy"] = publishPolicy;
-
-  root["publishURL"] = pushURL;
-
-  root["publishingUsername"] = pushUsername;
-
-  root["publishingPassword"] = pushPassword;
-
-  root["useNTP"] = (UseNTP.compareTo("true")==0);
-
-  root["NTPOffset"] = NTPOffset;
-  
-  root["NTPPoolURL"] = NTPPoolURL;
-  
-  String a;
-  serializeJson(root, a);
-  Serial.println(a);
-  a.toCharArray(html, ALLOCATED_EEPROM - 2);
-  
-  address = 1;
-  writeVar(html, ALLOCATED_EEPROM - 2, &address);
-
+  Serial.println(PSTR("Writting settings to EEPROM."));
   EEPROM.write(0, NON_FACTORY);
+  EEPROM.put(2, settings);
   EEPROM.commit();
-  
+  Serial.println(PSTR("Writting settings to EEPROM finished."));
+  readConfig();
 }
 
 /*
@@ -1060,31 +453,31 @@ void writeConfig() {
  * hence see what the current configuration is.
  */
 void printConfig() {
-  Serial.println("------------------------------------------------------");
-  Serial.println("Configured SSID: " + ssid);
-  Serial.println("Configured AP Password: " + APPassword);
+  Serial.println(PSTR("------------------------------------------------------"));
+  Serial.printf(PSTR("Configured server port: %d\n"), settings.serverPort);
+  Serial.printf(PSTR("Configured SSID: %s\n"), settings.accessPointSSID);
+  Serial.printf(PSTR("Configured AP Password: %\n"), settings.accessPointPassword);
   char Ip[15];
-  IPAddress(APIP[0], APIP[1], APIP[2], APIP[3]).toString().toCharArray(Ip, 15);
-  Serial.printf("Configured AP IP: %s\n", Ip);
-  Serial.println("Configured APMode: " + APMode);
-  Serial.printf("Configured channel: %s\n", channels[String(Channel).toInt()]);
-  Serial.println("Configured STAMode: " + STAMode);
-  Serial.println("Configured STA SSID: " + STASSID);
-  Serial.println("Configured STAPassword: " + STAPassword);
-  Serial.println("Configures STA Hostname: " + espHostname);
-  Serial.println("Configured Auth: " + Auth);
-  Serial.println("Configured AuthUsername: " + AuthUsername);
-  Serial.println("Configured AuthPassword: " + AuthPassword);
-  Serial.printf("Manual Sampling interval: %d\n", SIManual);
-  Serial.println("Configured publishing policy: " + publishPolicy);
-  Serial.println("Configured push URL: " + pushURL);
-  Serial.println("Configured push Username: " + pushUsername);
-  Serial.println("Configured push Password: " + pushPassword);
-
-  Serial.println("Configured use NTP: " + UseNTP);
-  Serial.printf("Configured NTP offset: %d\n", NTPOffset);
-  Serial.println("Configured NTP pool URL: " + NTPPoolURL);
-  Serial.println("------------------------------------------------------");  
+  IPAddress(settings.accessPointIP[0], settings.accessPointIP[1], settings.accessPointIP[2], settings.accessPointIP[3]).toString().toCharArray(Ip, 15);
+  Serial.printf(PSTR("Configured AP IP: %s\n"), Ip);
+  Serial.printf(PSTR("Configured APMode: %s\n"), settings.accessPointMode?"true":"false");
+  Serial.printf(PSTR("Configured channel: %s\n"), channels[settings.accessPointChannel]);
+  Serial.printf(PSTR("Configured STAMode: %s\n"), settings.stationMode?"true":"false");
+  Serial.printf(PSTR("Configured STA SSID: %s\n"), settings.stationSSID);
+  Serial.printf(PSTR("Configured STAPassword: %s\n"), settings.stationAccessPointPassword);
+  Serial.printf(PSTR("Configures STA Hostname: %s\n"), settings.hostName);
+  Serial.printf(PSTR("Configured Auth: %s\n"), settings.stationRequireAuthentication?"true":"false");
+  Serial.printf(PSTR("Configured AuthUsername: %s\n"), settings.stationUsername);
+  Serial.printf(PSTR("Configured AuthPassword: %s\n"), settings.stationPassword);
+  Serial.printf(PSTR("Manual Sampling interval: %d\n"), settings.sensorSampleInterval);
+  Serial.printf(PSTR("Configured publishing policy: %s\n"), settings.publishingPolicy);
+  Serial.printf(PSTR("Configured push URL: %s\n"), settings.publishingURL);
+  Serial.printf(PSTR("Configured push Username: %s\n"), settings.publishingUsername);
+  Serial.printf(PSTR("Configured push Password: %s\n"), settings.publishingPassword);
+  Serial.printf(PSTR("Configured use NTP: %s\n"), settings.useNTP?"true":"false");
+  Serial.printf(PSTR("Configured NTP offset: %d\n"), settings.NTPOffset);
+  Serial.printf(PSTR("Configured NTP pool URL: %s\n"), settings.NTPPoolURL);
+  Serial.println(PSTR("------------------------------------------------------"));  
 }
 
 /*
@@ -1094,11 +487,11 @@ void printConfig() {
  */
 void scanAccessPoints() {
   
-  Serial.println("Scanning for WiFi access points.");
+  Serial.println(PSTR("Scanning for WiFi access points."));
   netCount = WiFi.scanNetworks();
-  Serial.printf("%d networks available.\n", netCount);
+  Serial.printf(PSTR("%d networks available.\n"), netCount);
   for(int i=0; i<netCount; i++) {
-    Serial.printf("%d: %s, Ch:%d (%ddBm) %s\n", i + 1, WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i), WiFi.encryptionType(i) == ENC_TYPE_NONE ? "open" : "");
+    Serial.printf(PSTR("%d: %s, Ch:%d (%ddBm) %s\n"), i + 1, WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i), WiFi.encryptionType(i) == ENC_TYPE_NONE ? PSTR("open") : PSTR("secured"));
   }
     
 }
@@ -1109,69 +502,82 @@ void scanAccessPoints() {
 void setup() {
 
   Serial.begin(115200);
-  Serial.println();
-
-  Serial.println("Allocating EEPROM memory for configuration parameters.");
+  Serial.println(PSTR("Settings up-time and checking boot-counter."));
+  // Store last millis, we will use it later to reset the
+  // boot counter.
+  lastMillis = millis();
+  upTimeCounter = 0;
+  
+  Serial.println(PSTR("Allocating EEPROM memory for configuration parameters."));
   EEPROM.begin(ALLOCATED_EEPROM);
+
+  // Get the boot counter from EPROM, increment it and store it
+  // back into the EPROM.
+  bootCounter = EEPROM.read(1);
+  bootCounter++;
+  Serial.printf(PSTR("Boot counter incremented to %d\n"), bootCounter);
+
+  if(bootCounter == 3) {
+    // Boot counter hot three. We will reset to factory default and
+    // reset the boot counter to zero.
+    Serial.println(PSTR("Boot counter hit three, restoring factory defaults."));
+    bootCounter = 0;
+    storeFactoryDefaults();
+  }
+  
+  EEPROM.write(1, bootCounter);
+  EEPROM.commit();
 
   scanAccessPoints();
   
-  Serial.println("Loading configuration from EEPROM.");
   readConfig();
-  printConfig();
+
+  // Set-up a webserver on the configured port.
+  //delete server;
+  server = new ESP8266WebServer(settings.serverPort);
   
-  if(APMode.compareTo("true")==0) {
-    Serial.println("Configuring access point...");
+  if(settings.accessPointMode) {
+    Serial.println(PSTR("Configuring access point..."));
     
     //set-up the custom IP address
     WiFi.mode(WIFI_AP_STA);
-    WiFi.softAPConfig(IPAddress(APIP[0], APIP[1], APIP[2], APIP[3]), IPAddress(APIP[0], APIP[1], APIP[2], APIP[3]), IPAddress(255, 255, 255, 0));   // subnet FF FF FF 00  
+    WiFi.softAPConfig(IPAddress(settings.accessPointIP[0], settings.accessPointIP[1], settings.accessPointIP[2], settings.accessPointIP[3]), 
+                      IPAddress(settings.accessPointIP[0], settings.accessPointIP[1], settings.accessPointIP[2], settings.accessPointIP[3]), 
+                      IPAddress(255, 255, 255, 0));   // subnet FF FF FF 00  
     
-    char s[ssid.length()+1];
-    ssid.toCharArray(s, sizeof(s));
-    char p[APPassword.length()+1];
-    APPassword.toCharArray(p, sizeof(p));
-    WiFi.softAP(s, p, Channel, 0);
+    WiFi.softAP(settings.accessPointSSID, settings.accessPointPassword, settings.accessPointChannel, 0);
     IPAddress myIP = WiFi.softAPIP();
-    Serial.print("AP IP address: ");
-    Serial.println(myIP);
+    myIP.toString().toCharArray(currentIP, sizeof(currentIP));
+    Serial.printf(PSTR("AP IP address: %s\n"), currentIP);
     
-  } else if(STAMode.compareTo("true")==0 && STASSID.length()!=0) {
+  } else if(settings.stationMode && strcmp(settings.stationSSID, "")!=0) {
     WiFi.mode(WIFI_STA);
-    Serial.println("Connecting to '"+ STASSID + "' with password '" + STAPassword + "'");
-    char h[espHostname.length()+1];
-    espHostname.toCharArray(h, sizeof(h));
-    char s[STASSID.length()+1];
-    STASSID.toCharArray(s, sizeof(s));
-    char p[STAPassword.length()+1];
-    STAPassword.toCharArray(p, sizeof(p));
-    WiFi.hostname(h);
+    Serial.printf(PSTR("Connecting to '%s' with password '%s'\n"), settings.stationSSID, settings.stationAccessPointPassword);
+    WiFi.hostname(settings.hostName);
     
-    WiFi.begin(s, p);
+    WiFi.begin(settings.stationSSID, settings.stationAccessPointPassword);
     // Wait for connection
     int i = 0;
     while (WiFi.status() != WL_CONNECTED) {
       delay(500);
-      Serial.print(".");
+      Serial.print(PSTR("."));
       i++;
       if(i%30==0){
-        Serial.println("");
+        Serial.println();
       }
     }
-    Serial.println("");
-    Serial.println("Connected to: " + STASSID);
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-    Serial.println("Hostname: " + espHostname);
+    Serial.println();
+    
+    WiFi.localIP().toString().toCharArray(currentIP, sizeof(currentIP));
+    
+    Serial.printf(PSTR("Connected to: %s\n"), settings.stationSSID);
+    Serial.printf(PSTR("IP address: %s\n"), currentIP);
+    Serial.printf(PSTR("Hostname: %s\n"), settings.hostName);
 
-    if(UseNTP.compareTo("true")==0) {
-      Serial.println("Setting up NTP support.");
-
-      char u[NTPPoolURL.length()+1];
-      NTPPoolURL.toCharArray(u, sizeof(u));
-      //configTime(NTPOffset, 0, u);
-      configTime(NTPOffset, 0, "nl.pool.ntp.org");
-      Serial.println("\nWaiting for time");
+    if(settings.useNTP) {
+      Serial.println(PSTR("Setting up NTP support."));
+      configTime(settings.NTPOffset, 0, settings.NTPPoolURL);
+      Serial.println(PSTR("\nWaiting for time"));
       while (!time(nullptr)) {
         Serial.print(".");
         delay(500);
@@ -1183,71 +589,100 @@ void setup() {
     ESP.restart();
   }
   
-  Serial.println("Attempting to initialize BME680");
+  Serial.println(PSTR("Attempting to initialize BME680"));
   if (!bme.begin()) {
-    Serial.println("Could not find a valid BME680 sensor, check BME680 address and/or check wiring!");
+    Serial.println(PSTR("Could not find a valid BME680 sensor, check BME680 address and/or check wiring!"));
     while (1);
   }
   
-  server.on ( "/", handleRoot );
-  server.on ( "/sensor/read", handleSensorRead);
-  server.on ( "/sensor/data", handleSensorData);
-  server.on ("/settings", handleSettings);
-  server.on ("/aplist", handleAPScan);
-  server.on ("/nodemcu.css", handleCSS);
-  server.on ("/nodemcu.js", handleJS);
-  server.onNotFound ( handleNotFound );
+  server->on (PSTR("/"), handleRoot );
+  server->on (PSTR("/sensor/read"), handleSensorRead);
+  server->on (PSTR("/status"), handleStatus);
+  server->on (PSTR("/settings"), handleSettings);
+  server->on (PSTR("/aplist"), handleAPScan);
+  server->on (PSTR("/nodemcu.css"), handleCSS);
+  server->on (PSTR("/nodemcu.js"), handleJS);
+  server->onNotFound ( handleNotFound );
   
-  server.begin();
-  Serial.println("HTTP server started");
-
+  server->begin();
+  Serial.println(PSTR("HTTP server started"));
+  
+  lastMillis = 0;
+  upTimeCounter = 0;
 }
 
 /*
  * Main processing loop.
  */
 void loop() {
+
+  // Check the elapsed millis. If they hit over 600000
+  // then we reset the bootCounter to zero.
+  if(bootCounter!=0 && millis()>60000) {
+    Serial.println(PSTR("Resetting boot counter to zero."));
+    bootCounter = 0;
+    EEPROM.write(1, bootCounter);
+    EEPROM.commit();
+  }
   
-  server.handleClient();
+  server->handleClient();
+  
+  // Up-time counter processing.
+  if(millis() >= lastMillis) {
+    upTimeCounter += (millis() - lastMillis);
+  } else {
+    // millis cycled round and started at zero again.
+    // We do not know exactly when the millis cycle round.
+    // The millis are unsigned long which should be more
+    // than enough to hold decades, but ... it doesn't.
+    // We will lose some millis but that is not really
+    // important.
+    upTimeCounter += millis();
+  }
+  lastMillis = millis();
+  
   // Get time.
   time_t now = time(nullptr);
 
-  // Check if it is time to take a measurement.
-  if(now%SIManual==0 && !measurementTaken) {
-    measurementTaken = true;
-    if (! bme.performReading()) {
-      Serial.println("Failed to perform reading");
-      measurementTaken = false;
-    } else {
+  // Take measurements.
+  // Do this continueally. The BME680 has
+  // a burn in period at least 5 minutes.
+  bme.performReading();
+  
+  // Check if it is time to publish a measurement.
+  if(now%settings.sensorSampleInterval==0) {
+    if(!measurementPublished || (settings.sensorSampleInterval==1 && now!=lastMeasurement)) {
+      measurementPublished = true;
       lastMeasurement = time(nullptr);
       Serial.println(ctime(&lastMeasurement));
-      Serial.print(PSTR("Temperature = ")); Serial.print(bme.temperature); Serial.println(" *C");
-      Serial.print("Pressure = "); Serial.print(bme.pressure / 100.0); Serial.println(" hPa");
-      Serial.print("Humidity = "); Serial.print(bme.humidity); Serial.println(" %");
-      Serial.print("Gas = "); Serial.print(bme.gas_resistance / 1000.0); Serial.println(" KOhms");
+      Serial.print(PSTR("Temperature = ")); Serial.print(bme.temperature); Serial.println(PSTR(" *C"));
+      Serial.print(PSTR("Pressure = ")); Serial.print(bme.pressure / 100.0); Serial.println(PSTR(" hPa"));
+      Serial.print(PSTR("Humidity = ")); Serial.print(bme.humidity); Serial.println(PSTR(" %"));
+      Serial.print(PSTR("Gas = ")); Serial.print(bme.gas_resistance / 1000.0); Serial.println(PSTR(" KOhms"));
 
-      if(publishPolicy.compareTo("Push")==0) {
+      if(strcmp(settings.publishingPolicy, PSTR("Push"))==0) {
         HTTPClient http;    //Declare object of class HTTPClient
         
-        http.begin(pushURL);      //Specify request destination
-        http.addHeader("Content-Type", "application/json");  //Specify content-type header
-        
-        snprintf(html, 500, SENSOR_HTML, lastMeasurement, bme.temperature, bme.humidity, bme.pressure / 100.0, bme.gas_resistance, 0, "Success");
+        http.begin(settings.publishingURL);      //Specify request destination
+        http.addHeader(PSTR("Content-Type"), PSTR("application/json"));  //Specify content-type header
+
+        snprintf(html, 500, SENSOR_HTML, settings.hostName, lastMeasurement, bme.temperature, bme.humidity, bme.pressure / 100.0, bme.gas_resistance, 0, PSTR("Success"));
         Serial.println(html);
         int httpCode = http.POST(html);     //Send the request
         String payload = http.getString();  //Get the response payload
+
+        // On http code 200 the remote server accepted the
+        // measurement.
+        measurementPublished = (httpCode==200);
         
         Serial.println(httpCode);   //Print HTTP return code
         Serial.println(payload);    //Print request response payload
         
         http.end();  //Close connection
       }
-
-
-      
     }
   } else {
-    measurementTaken = false;
+    measurementPublished = false;
   }
   
 }
